@@ -28,6 +28,7 @@
             android:text="笔粗-"></Button>
 
         <Button
+            android:id="@+id/buttColor"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="颜色"></Button>

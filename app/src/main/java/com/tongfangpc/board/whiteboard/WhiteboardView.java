@@ -10,6 +10,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PathMeasure;
 import android.graphics.PointF;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -29,7 +30,7 @@ import com.tongfangpc.board.whiteboard.config.PenConfig;
 
 /*
 白班画图视图View，实现基本的笔画、橡皮擦、上一步、下一步等操作；
-WhiteboardView的更新没有放在主线程，而通过HandlerThread进行更新，防止绘画量大而阻塞主线程。
+WhiteboardView的更新没有放在主线程，而通过HandlerThread进行更新，通过绘画线程更新，防止绘画计算量大而卡顿主线程。
 WhiteboardView的绘图更新，采用了缓冲区策略，在内存中开辟大小一致的Bitmap，同步渲染历史记录，
 在每个更新渲染函数render中，只做核心两件事：
 1、将包含历史绘图记录的缓冲区bitmap贴到显示区
@@ -89,7 +90,7 @@ public class WhiteboardView extends SurfaceView implements SurfaceHolder.Callbac
     /*
     所有的行为轨迹集合列表
      */
-    List<Action> strokerPaths;
+    List<Action> historicActions;
 
     /*
     永远指向下一个当前可写笔画(Path)在行为轨迹集合中的下一个合法可写入的位置索引
@@ -100,12 +101,15 @@ public class WhiteboardView extends SurfaceView implements SurfaceHolder.Callbac
     /*
     当前最新的一个滑动轨迹记录
      */
-    Path strokePath;
+    Path latestStrokePath;
 
     /*
     当前的画笔
      */
     Paint currentPaint;
+
+
+    Paint pointPaint;
 
     /*
     当前的滑动手势的坐标
@@ -117,6 +121,14 @@ public class WhiteboardView extends SurfaceView implements SurfaceHolder.Callbac
      */
     PenConfig penConfig;
 
+
+    boolean isSurfaceAvailable;
+
+    int moveCount = 0;
+
+    long motionTime = 0;
+
+    int strokeFragmentWidth = 20;
     /*
     当前的背景颜色
      */
@@ -137,14 +149,19 @@ public class WhiteboardView extends SurfaceView implements SurfaceHolder.Callbac
      */
     public void initWhiteboardView(Context context) {
         currentPaint = new Paint();
+        pointPaint = new Paint();
+        pointPaint.setStyle(Paint.Style.STROKE);
+        pointPaint.setStrokeCap(Paint.Cap.ROUND);
+        pointPaint.setStrokeWidth(18);
+        pointPaint.setColor(Color.BLUE);
         penConfig = new PenConfig(context);
         penConfig.setColor(Color.RED).setStokeWidth(12);
         penConfig.modify(currentPaint);
 
         backgroundColorId = Color.WHITE;
 
-        strokerPaths = new LinkedList<>();
-        strokePath = new Path();
+        historicActions = new LinkedList<>();
+        latestStrokePath = new Path();
 
         surfaceHolder = this.getHolder();
         surfaceHolder.addCallback(this);
@@ -152,45 +169,64 @@ public class WhiteboardView extends SurfaceView implements SurfaceHolder.Callbac
         setFocusable(true);
         setFocusableInTouchMode(true);
         setKeepScreenOn(true);
-        renderThread = new HandlerThread("RenderThread");
     }
 
 
     @Override
     public synchronized boolean onTouchEvent(MotionEvent event) {
         int touchCount = event.getPointerCount();
+        float distanceToLatestPoint = 0;
+
         switch (event.getAction()) {
             case MotionEvent.ACTION_DOWN:
-                strokePath.reset();
+                /*清空最新的一笔路径容器，并记录笔画的开始点*/
+                latestStrokePath.reset();
                 motionPoint.set(event.getX(), event.getY());
-                strokePath.moveTo(motionPoint.x, motionPoint.y);
-                strokePath.lineTo(motionPoint.x, motionPoint.y);
+                latestStrokePath.moveTo(motionPoint.x, motionPoint.y);
+                latestStrokePath.quadTo(motionPoint.x, motionPoint.y, motionPoint.x, motionPoint.y);
                 doRender();
+                moveCount = 0;
+                motionTime = System.currentTimeMillis();
                 break;
 
             case MotionEvent.ACTION_MOVE:
-                //Log.d(TAG, "onTouchEvent.MOVE");
-                float disX = Math.abs(event.getX() - motionPoint.x),
-                        disY = Math.abs((event.getY() - motionPoint.y));
-                if (disX >= penConfig.getStokeWidth() || disY >= penConfig.getStokeWidth()) {
-                    strokePath.quadTo(motionPoint.x, motionPoint.y, (event.getX() + motionPoint.x) / 2, (event.getY() + motionPoint.y) / 2);
+                distanceToLatestPoint  = (float)Math.hypot(event.getY() - motionPoint.y, event.getX() - motionPoint.x);
+                if (distanceToLatestPoint > penConfig.getStokeWidth() * 2) {
+                    long currentMotionTime = System.currentTimeMillis();
+                    long strokeTimeSpan = Math.abs(currentMotionTime - motionTime);
+                    float velocity = distanceToLatestPoint / strokeTimeSpan;
+                    Log.d(TAG, "onTouchEvent.MOVE:" + "distance=" + distanceToLatestPoint + ",timespan=" + strokeTimeSpan + ",velocity="  + velocity);
+                    motionTime = currentMotionTime;
+                    latestStrokePath.quadTo(motionPoint.x, motionPoint.y, (event.getX() + motionPoint.x) / 2, (event.getY() + motionPoint.y) / 2);
+                    //latestStrokePath.quadTo(motionPoint.x, motionPoint.y, event.getX(), event.getY());
+                    bufferCanvas.drawPoint(event.getX(), event.getY(), pointPaint);
                     motionPoint.set(event.getX(), event.getY());
                     doRender();
                 }
                 break;
+
             case MotionEvent.ACTION_CANCEL:
                 Log.d(TAG, "onTouchEvent.ACTION_CANCEL");
             case MotionEvent.ACTION_UP:
-                Log.d(TAG, "onTouchEvent.ACTION_UP");
+                distanceToLatestPoint  = (float)Math.hypot(event.getY() - motionPoint.y, event.getX() - motionPoint.x);
+                long currentMotionTime = System.currentTimeMillis();
+                float velocity = distanceToLatestPoint / (currentMotionTime - motionTime);
+                Log.d(TAG, "onTouchEvent.ACTION_UP: distance=" + distanceToLatestPoint + ",timespan=" + (currentMotionTime - motionTime) + ",velocity=" + velocity);
+                //如果切入点在历史轨迹的某个中间点上，说明用户之前做过undo操作， 那么要把doIndex之后的无效动作删掉
                 if (canRedo()) {
-                    while (nextDoIndex > 0 && strokerPaths.size() > nextDoIndex) {
-                        strokerPaths.remove(strokerPaths.size() - 1);
+                    while (nextDoIndex > 0 && historicActions.size() > nextDoIndex) {
+                        historicActions.remove(historicActions.size() - 1);
                     }
                 }
+                if(distanceToLatestPoint > 0) {
+                    latestStrokePath.quadTo(motionPoint.x, motionPoint.y, (event.getX() + motionPoint.x) / 2, (event.getY() + motionPoint.y) / 2);
+                    bufferCanvas.drawPoint(event.getX(), event.getY(), pointPaint);
+                    doRender();
+                }
                 //当前轨迹加入历史记录
-                strokerPaths.add(new PathAction(strokePath, penConfig));
+                historicActions.add(new PathAction(latestStrokePath, penConfig));
                 //当前轨迹画入缓冲区
-                bufferCanvas.drawPath(strokePath, currentPaint);
+                bufferCanvas.drawPath(latestStrokePath, currentPaint);
                 //历史记录doindex向后移动
                 ++nextDoIndex;
                 break;
@@ -214,7 +250,7 @@ public class WhiteboardView extends SurfaceView implements SurfaceHolder.Callbac
         if (canvas != null) {
             Log.d(TAG, "render()");
             canvas.drawBitmap(bitmapBuffer, 0, 0, currentPaint);
-            canvas.drawPath(strokePath, currentPaint);
+            canvas.drawPath(latestStrokePath, currentPaint);
             surfaceHolder.unlockCanvasAndPost(canvas);
         }
     }
@@ -223,20 +259,35 @@ public class WhiteboardView extends SurfaceView implements SurfaceHolder.Callbac
     render的触发函数包装
      */
     public void doRender() {
-        renderThreadHandler.sendEmptyMessage(0);
+        if (isSurfaceAvailable && renderThreadHandler != null) {
+            renderThreadHandler.sendEmptyMessage(0);
+        }
     }
 
 
     /*
     SurfaceHolder.Callback的回调实现
+    当surface被创建或者可用时被调用
+    注意，当外层Activty被resume时，也会被调用
      */
     @Override
     public void surfaceCreated(SurfaceHolder surfaceHolder) {
-        bitmapBuffer = Bitmap.createBitmap(this.getWidth(), this.getHeight(), Bitmap.Config.ARGB_8888);
-        bufferCanvas = new Canvas(bitmapBuffer);
-        bufferCanvas.drawColor(backgroundColorId);
+        renderThread = new HandlerThread("RenderThread");
         renderThread.start();
+        if (bitmapBuffer == null) {
+            bitmapBuffer = Bitmap.createBitmap(this.getWidth(), this.getHeight(), Bitmap.Config.ARGB_8888);
+            bufferCanvas = new Canvas(bitmapBuffer);
+            bufferCanvas.drawColor(backgroundColorId);
+        }
+        //如果路径不为空，说明当前是因为Activity窗体被resume回来的，那么要把缓冲区中的历史轨迹要走一遍s
+        if (historicActions.size() > 0 && nextDoIndex > 0) {
+            for (int i = 0, j = historicActions.size(); i < j && i < nextDoIndex; i++) {
+                historicActions.get(i).draw(bufferCanvas);
+            }
+        }
         renderThreadHandler = new RenderThreadHandler(renderThread.getLooper(), this);
+        isSurfaceAvailable = true;
+        //doRender调用一次，主要是为了将初始化画面更新到白板上；
         doRender();
     }
 
@@ -254,11 +305,15 @@ public class WhiteboardView extends SurfaceView implements SurfaceHolder.Callbac
      */
     @Override
     public void surfaceDestroyed(SurfaceHolder surfaceHolder) {
+        isSurfaceAvailable = false;
         //清空消息队列
         renderThreadHandler.removeCallbacksAndMessages(null);
         //线程退出
         renderThread.quit();
         bitmapBuffer.recycle();
+        renderThread = null;
+        renderThreadHandler = null;
+        bitmapBuffer = null;
     }
 
 
@@ -281,7 +336,7 @@ public class WhiteboardView extends SurfaceView implements SurfaceHolder.Callbac
     根据当前的行为轨迹集合来返回是否可以进行取消一步操作
      */
     public synchronized boolean canUndo() {
-        if (nextDoIndex <= 0 || strokerPaths.size() <= 0) {
+        if (nextDoIndex <= 0 || historicActions.size() <= 0) {
             return false;
         }
         return true;
@@ -291,7 +346,7 @@ public class WhiteboardView extends SurfaceView implements SurfaceHolder.Callbac
     根据当前的行为轨迹集合来判断返回是否可以进行重做一步操作
      */
     public synchronized boolean canRedo() {
-        return nextDoIndex < strokerPaths.size();
+        return nextDoIndex < historicActions.size();
     }
 
     /*
@@ -313,9 +368,10 @@ public class WhiteboardView extends SurfaceView implements SurfaceHolder.Callbac
         bufferCanvas.drawColor(backgroundColorId);
         //根据0索引到新索引点nextDoIndex之间的轨迹记录，进行重绘
         for (int i = 0; i < nextDoIndex; i++) {
-            strokerPaths.get(i).draw(bufferCanvas);
+            historicActions.get(i).draw(bufferCanvas);
         }
-        strokePath.reset();
+        //将最新一条临时轨迹清空，否则他会随着doRender被更新到画面上
+        latestStrokePath.reset();
         doRender();
         return true;
     }
@@ -334,9 +390,10 @@ public class WhiteboardView extends SurfaceView implements SurfaceHolder.Callbac
         bufferCanvas.drawColor(backgroundColorId);
         //根据0索引到新索引点nextDoIndex之间的轨迹记录，进行重绘
         for (int i = 0; i < nextDoIndex; i++) {
-            strokerPaths.get(i).draw(bufferCanvas);
+            historicActions.get(i).draw(bufferCanvas);
         }
-        strokePath.reset();
+        //将最新一条临时轨迹清空，否则他会随着doRender被更新到画面上
+        latestStrokePath.reset();
         doRender();
         return true;
     }

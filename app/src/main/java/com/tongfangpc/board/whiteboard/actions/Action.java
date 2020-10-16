@@ -8,5 +8,6 @@ public abstract class Action {
     static {
         actionPen = new Paint();
     }
+    public abstract void reset();
     public abstract void draw(Canvas canvas);
 }

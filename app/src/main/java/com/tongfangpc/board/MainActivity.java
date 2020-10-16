@@ -1,8 +1,12 @@
 package com.tongfangpc.board;
 
 import androidx.appcompat.app.AppCompatActivity;
+
+import android.graphics.Color;
+import android.graphics.PathMeasure;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.VelocityTracker;
 import android.view.View;
 import android.widget.Button;
 
@@ -13,11 +17,14 @@ import com.tongfangpc.board.whiteboard.WhiteboardView;
  * status bar and navigation/system bar) with user interaction.
  */
 public class MainActivity extends AppCompatActivity {
+    VelocityTracker tracker;
+
     static String TAG = MainActivity.class.getSimpleName();
     Button buttRedo;
     Button buttUndo;
     Button buttIncreateWidth;
     Button buttReduceWidth;
+    Button buttColor;
     WhiteboardView whiteboardView;
 
     @Override
@@ -29,6 +36,7 @@ public class MainActivity extends AppCompatActivity {
         buttUndo = findViewById(R.id.buttUndo);
         buttIncreateWidth = findViewById(R.id.buttIncreaseWidth);
         buttReduceWidth = findViewById(R.id.buttReduceWidth);
+        buttColor = findViewById(R.id.buttColor);
         buttUndo.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
@@ -65,5 +73,28 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         });
+
+        buttColor.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                if(whiteboardView.getPenColor() == Color.RED) {
+                    whiteboardView.setPenColor(Color.GREEN);
+                }
+                else {
+                    whiteboardView.setPenColor(Color.RED);
+                }
+            }
+        });
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+//        whiteboardView.doRender();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
     }
 }

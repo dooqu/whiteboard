@@ -64,6 +64,7 @@ public class PenConfig {
         paint.setColor(color);
         paint.setStrokeWidth(stokeWidth);
         paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeCap(Paint.Cap.ROUND);
     }
 
     public SharedPreferences getReferences() {
